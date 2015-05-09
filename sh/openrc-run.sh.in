@@ -153,6 +153,7 @@ start()
 {
 	local func=ssd_start
 	case "$supervisor" in
+		runit) func=runit_start ;;
 		s6) func=s6_start ;;
 		?*)
 			ewarn "Invalid supervisor, \"$supervisor\", using start-stop-daemon"
@@ -165,6 +166,7 @@ stop()
 {
 	local func=ssd_stop
 	case "$supervisor" in
+		runit) func=runit_stop ;;
 		s6) func=s6_stop ;;
 		?*)
 			ewarn "Invalid supervisor, \"$supervisor\", using start-stop-daemon"
@@ -177,6 +179,7 @@ status()
 {
 	local func=ssd_status
 	case "$supervisor" in
+		runit) func=runit_status ;;
 		s6) func=s6_status ;;
 		?*)
 			ewarn "Invalid supervisor, \"$supervisor\", using start-stop-daemon"
@@ -213,6 +216,7 @@ fi
 
 
 # load service supervisor functions
+sourcex "@LIBEXECDIR@/sh/runit.sh"
 sourcex "@LIBEXECDIR@/sh/s6.sh"
 sourcex "@LIBEXECDIR@/sh/start-stop-daemon.sh"
 
