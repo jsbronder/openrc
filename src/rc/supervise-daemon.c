@@ -1010,7 +1010,8 @@ int main(int argc, char **argv)
 	if (background)
 		signal_setup(SIGCHLD, handle_signal);
 
-	if ((pid = fork()) == -1)
+	pid = fork();
+	if (pid == -1)
 		eerrorx("%s: fork: %s", applet, strerror(errno));
 
 	/* Child process - lets go! */
