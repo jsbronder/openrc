@@ -77,7 +77,6 @@ const struct option longopts[] = {
 	{ "env",          1, NULL, 'e'},
 	{ "umask",        1, NULL, 'k'},
 	{ "group",        1, NULL, 'g'},
-	{ "interpreted",  0, NULL, 'i'},
 	{ "make-pidfile", 0, NULL, 'm'},
 	{ "name",         1, NULL, 'n'},
 	{ "pidfile",      1, NULL, 'p'},
@@ -103,7 +102,6 @@ const char * const longopts_help[] = {
 	"Set an environment string",
 	"Set the umask for the daemon",
 	"Change the process group",
-	"Match process name by interpreter",
 	"Create a pidfile",
 	"Match process name",
 	"Match pid found in this file",
@@ -168,15 +166,12 @@ free_schedulelist(void)
 	TAILQ_INIT(&schedule);
 }
 
-#ifdef DEBUG_MEMORY
-static void
-cleanup(void)
+static void cleanup(void)
 {
 	free(changeuser);
 	free(nav);
 	free_schedulelist();
 }
-#endif
 
 static int
 parse_signal(const char *sig)
@@ -646,7 +641,6 @@ int main(int argc, char **argv)
 	int nicelevel = 0, ionicec = -1, ioniced = 0;
 	bool background = false;
 	bool makepidfile = false;
-	bool interpreted = false;
 	bool progress = false;
 	uid_t uid = 0;
 	gid_t gid = 0;
@@ -677,9 +671,7 @@ int main(int argc, char **argv)
 
 	applet = basename_c(argv[0]);
 	TAILQ_INIT(&schedule);
-#ifdef DEBUG_MEMORY
 	atexit(cleanup);
-#endif
 
 	signal_setup(SIGINT, handle_signal);
 	signal_setup(SIGQUIT, handle_signal);
@@ -802,10 +794,6 @@ int main(int argc, char **argv)
 				eerrorx("%s: group `%s' not found",
 				    applet, optarg);
 			gid = gr->gr_gid;
-			break;
-
-		case 'i': /* --interpreted */
-			interpreted = true;
 			break;
 
 		case 'k':
@@ -945,39 +933,6 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	/* If we don't have a pidfile we should check if it's interpreted
-	 * or not. If it we, we need to pass the interpreter through
-	 * to our daemon calls to find it correctly. */
-	if (interpreted && !pidfile) {
-		fp = fopen(exec_file, "r");
-		if (fp) {
-			p = fgets(line, sizeof(line), fp);
-			fclose(fp);
-			if (p != NULL && line[0] == '#' && line[1] == '!') {
-				p = line + 2;
-				/* Strip leading spaces */
-				while (*p == ' ' || *p == '\t')
-					p++;
-				/* Remove the trailing newline */
-				len = strlen(p) - 1;
-				if (p[len] == '\n')
-					p[len] = '\0';
-				token = strsep(&p, " ");
-				strncpy(exec_file, token, sizeof(exec_file));
-				opt = 0;
-				for (nav = argv; *nav; nav++)
-					opt++;
-				nav = xmalloc(sizeof(char *) * (opt + 3));
-				nav[0] = exec_file;
-				len = 1;
-				if (p)
-					nav[len++] = p;
-				for (i = 0; i < opt; i++)
-					nav[i + len] = argv[i];
-				nav[i + len] = '\0';
-			}
-		}
-	}
 	margv = nav ? nav : argv;
 
 	if (stop || sig != -1) {
