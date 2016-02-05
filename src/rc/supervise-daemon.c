@@ -64,7 +64,7 @@ static struct pam_conv conv = { NULL, NULL};
 
 const char *applet = NULL;
 const char *extraopts = NULL;
-const char *getoptstring = "I:KN:PR:Sa:d:e:g:ik:mn:p:s:tu:r:w:x:1:2:" \
+const char *getoptstring = "I:KN:PR:Sa:d:e:g:ik:n:p:s:tu:r:w:x:1:2:" \
 	getoptstring_COMMON;
 const struct option longopts[] = {
 	{ "ionice",       1, NULL, 'I'},
@@ -76,7 +76,6 @@ const struct option longopts[] = {
 	{ "env",          1, NULL, 'e'},
 	{ "umask",        1, NULL, 'k'},
 	{ "group",        1, NULL, 'g'},
-	{ "make-pidfile", 0, NULL, 'm'},
 	{ "name",         1, NULL, 'n'},
 	{ "pidfile",      1, NULL, 'p'},
 	{ "signal",       1, NULL, 's'},
@@ -100,7 +99,6 @@ const char * const longopts_help[] = {
 	"Set an environment string",
 	"Set the umask for the daemon",
 	"Change the process group",
-	"Create a pidfile",
 	"Match process name",
 	"Match pid found in this file",
 	"Send a different signal",
@@ -637,7 +635,6 @@ int main(int argc, char **argv)
 	char *retry = NULL;
 	int sig = -1;
 	int nicelevel = 0, ionicec = -1, ioniced = 0;
-	bool makepidfile = false;
 	bool progress = false;
 	uid_t uid = 0;
 	gid_t gid = 0;
@@ -796,10 +793,6 @@ int main(int argc, char **argv)
 				    applet, optarg);
 			break;
 
-		case 'm':  /* --make-pidfile */
-			makepidfile = true;
-			break;
-
 		case 'n':  /* --name <process-name> */
 			name = optarg;
 			break;
@@ -864,18 +857,14 @@ int main(int argc, char **argv)
 		if (!*argv && !pidfile && !name && !uid)
 			eerrorx("%s: --stop needs --exec, --pidfile,"
 			    " --name or --user", applet);
-		if (makepidfile)
-			eerrorx("%s: --make-pidfile is only relevant with"
-			    " --start", applet);
 		if (redirect_stdout || redirect_stderr)
 			eerrorx("%s: --stdout and --stderr are only relevant"
 			    " with --start", applet);
 	} else {
 		if (!exec)
 			eerrorx("%s: nothing to start", applet);
-		if (makepidfile && !pidfile)
-			eerrorx("%s: --make-pidfile is only relevant with"
-			    " --pidfile", applet);
+		if (!pidfile)
+			eerrorx("%s: --pidfile must be specified", applet);
 	}
 
 	/* Expand ~ */
@@ -1030,14 +1019,12 @@ int main(int argc, char **argv)
 			eerrorx("%s: chdir `%s': %s",
 			    applet, ch_dir, strerror(errno));
 
-		if (makepidfile && pidfile) {
-			fp = fopen(pidfile, "w");
-			if (! fp)
-				eerrorx("%s: fopen `%s': %s", applet, pidfile,
-				    strerror(errno));
-			fprintf(fp, "%d\n", mypid);
-			fclose(fp);
-		}
+		fp = fopen(pidfile, "w");
+		if (! fp)
+			eerrorx("%s: fopen `%s': %s", applet, pidfile,
+			    strerror(errno));
+		fprintf(fp, "%d\n", mypid);
+		fclose(fp);
 
 #ifdef HAVE_PAM
 		if (changeuser != NULL) {
