@@ -64,7 +64,7 @@ static struct pam_conv conv = { NULL, NULL};
 
 const char *applet = NULL;
 const char *extraopts = NULL;
-const char *getoptstring = "I:KN:PR:Sa:bd:e:g:ik:mn:p:s:tu:r:w:x:1:2:" \
+const char *getoptstring = "I:KN:PR:Sa:d:e:g:ik:mn:p:s:tu:r:w:x:1:2:" \
 	getoptstring_COMMON;
 const struct option longopts[] = {
 	{ "ionice",       1, NULL, 'I'},
@@ -72,7 +72,6 @@ const struct option longopts[] = {
 	{ "nicelevel",    1, NULL, 'N'},
 	{ "retry",        1, NULL, 'R'},
 	{ "start",        0, NULL, 'S'},
-	{ "background",   0, NULL, 'b'},
 	{ "chdir",        1, NULL, 'd'},
 	{ "env",          1, NULL, 'e'},
 	{ "umask",        1, NULL, 'k'},
@@ -97,7 +96,6 @@ const char * const longopts_help[] = {
 	"Set a nicelevel when starting",
 	"Retry schedule to use when stopping",
 	"Start daemon",
-	"Force daemon to background",
 	"Change the PWD",
 	"Set an environment string",
 	"Set the umask for the daemon",
@@ -639,7 +637,6 @@ int main(int argc, char **argv)
 	char *retry = NULL;
 	int sig = -1;
 	int nicelevel = 0, ionicec = -1, ioniced = 0;
-	bool background = false;
 	bool makepidfile = false;
 	bool progress = false;
 	uid_t uid = 0;
@@ -673,6 +670,7 @@ int main(int argc, char **argv)
 	TAILQ_INIT(&schedule);
 	atexit(cleanup);
 
+	signal_setup(SIGCHLD, handle_signal);
 	signal_setup(SIGINT, handle_signal);
 	signal_setup(SIGQUIT, handle_signal);
 	signal_setup(SIGTERM, handle_signal);
@@ -731,10 +729,6 @@ int main(int argc, char **argv)
 
 		case 'S':  /* --start */
 			start = true;
-			break;
-
-		case 'b':  /* --background */
-			background = true;
 			break;
 
 		case 'u':  /* --user <username>|<uid> */
@@ -870,9 +864,6 @@ int main(int argc, char **argv)
 		if (!*argv && !pidfile && !name && !uid)
 			eerrorx("%s: --stop needs --exec, --pidfile,"
 			    " --name or --user", applet);
-		if (background)
-			eerrorx("%s: --background is only relevant with"
-			    " --start", applet);
 		if (makepidfile)
 			eerrorx("%s: --make-pidfile is only relevant with"
 			    " --start", applet);
@@ -885,9 +876,6 @@ int main(int argc, char **argv)
 		if (makepidfile && !pidfile)
 			eerrorx("%s: --make-pidfile is only relevant with"
 			    " --pidfile", applet);
-		if ((redirect_stdout || redirect_stderr) && !background)
-			eerrorx("%s: --stdout and --stderr are only relevant"
-			    " with --background", applet);
 	}
 
 	/* Expand ~ */
@@ -1006,9 +994,6 @@ int main(int argc, char **argv)
 	/* Remove existing pidfile */
 	if (pidfile)
 		unlink(pidfile);
-
-	if (background)
-		signal_setup(SIGCHLD, handle_signal);
 
 	pid = fork();
 	if (pid == -1)
@@ -1170,11 +1155,10 @@ int main(int argc, char **argv)
 				    applet, redirect_stderr, strerror(errno));
 		}
 
-		if (background)
-			dup2(stdin_fd, STDIN_FILENO);
-		if (background || redirect_stdout || rc_yesno(getenv("EINFO_QUIET")))
+		dup2(stdin_fd, STDIN_FILENO);
+		if (redirect_stdout || rc_yesno(getenv("EINFO_QUIET")))
 			dup2(stdout_fd, STDOUT_FILENO);
-		if (background || redirect_stderr || rc_yesno(getenv("EINFO_QUIET")))
+		if (redirect_stderr || rc_yesno(getenv("EINFO_QUIET")))
 			dup2(stderr_fd, STDERR_FILENO);
 
 		for (i = getdtablesize() - 1; i >= 3; --i)
@@ -1190,27 +1174,24 @@ int main(int argc, char **argv)
 		    applet, exec,strerror(errno));
 	}
 
-	/* Parent process */
-	if (!background) {
-		/* As we're not backgrounding the process, wait for our pid
-		 * to return */
-		i = 0;
-		spid = pid;
-
-		do {
-			pid = waitpid(spid, &i, 0);
-			if (pid < 1) {
-				eerror("waitpid %d: %s",
-				    spid, strerror(errno));
-				return -1;
-			}
-		} while (!WIFEXITED(i) && !WIFSIGNALED(i));
-		if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
-			eerror("%s: failed to start `%s'", applet, exec);
-			exit(EXIT_FAILURE);
+	/*
+	 * Parent process
+	 * Wait for the child process to return.
+	 */
+	i = 0;
+	spid = pid;
+	do {
+		pid = waitpid(spid, &i, 0);
+		if (pid < 1) {
+			eerror("waitpid %d: %s", spid, strerror(errno));
+			return -1;
 		}
-		pid = spid;
+	} while (!WIFEXITED(i) && !WIFSIGNALED(i));
+	if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
+		eerror("%s: failed to start `%s'", applet, exec);
+		exit(EXIT_FAILURE);
 	}
+	pid = spid;
 
 	/* Wait a little bit and check that process is still running
 	   We do this as some badly written daemons fork and then barf */
@@ -1237,24 +1218,18 @@ int main(int argc, char **argv)
 				return 0;
 			}
 		}
-		if (background) {
-			if (kill(pid, 0) == 0)
-				alive = true;
-		} else {
-			if (pidfile) {
-				pid = get_pid(pidfile);
-				if (pid == -1) {
-					eerrorx("%s: did not "
-					    "create a valid"
-					    " pid in `%s'",
-					    applet, pidfile);
-				}
-			} else
-				pid = 0;
-			if (do_stop(exec, (const char *const *)margv,
-				pid, uid, 0, test) > 0)
-				alive = true;
-		}
+		if (pidfile) {
+			pid = get_pid(pidfile);
+			if (pid == -1) {
+				eerrorx("%s: did not create a valid"
+				    " pid in `%s'",
+				    applet, pidfile);
+			}
+		} else
+			pid = 0;
+		if (do_stop(exec, (const char *const *)margv,
+			pid, uid, 0, test) > 0)
+			alive = true;
 
 		if (!alive)
 			eerrorx("%s: %s died", applet, exec);
