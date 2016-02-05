@@ -148,8 +148,7 @@ static inline int ioprio_set(int which, int who, int ioprio)
 }
 #endif
 
-static void
-free_schedulelist(void)
+static void free_schedulelist(void)
 {
 	SCHEDULEITEM *s1 = TAILQ_FIRST(&schedule);
 	SCHEDULEITEM *s2;
@@ -169,8 +168,7 @@ static void cleanup(void)
 	free_schedulelist();
 }
 
-static int
-parse_signal(const char *sig)
+static int parse_signal(const char *sig)
 {
 	typedef struct signalpair
 	{
@@ -227,8 +225,7 @@ parse_signal(const char *sig)
 	/* NOTREACHED */
 }
 
-static SCHEDULEITEM *
-parse_schedule_item(const char *string)
+static SCHEDULEITEM * parse_schedule_item(const char *string)
 {
 	const char *after_hyph;
 	int sig;
@@ -255,8 +252,7 @@ parse_schedule_item(const char *string)
 	return item;
 }
 
-static void
-parse_schedule(const char *string, int timeout)
+static void parse_schedule(const char *string, int timeout)
 {
 	char buffer[20];
 	const char *slash;
@@ -330,8 +326,7 @@ parse_schedule(const char *string, int timeout)
 	return;
 }
 
-static pid_t
-get_pid(const char *pidfile)
+static pid_t get_pid(const char *pidfile)
 {
 	FILE *fp;
 	pid_t pid;
@@ -356,8 +351,7 @@ get_pid(const char *pidfile)
 }
 
 /* return number of processed killed, -1 on error */
-static int
-do_stop(const char *exec, const char *const *argv,
+static int do_stop(const char *exec, const char *const *argv,
     pid_t pid, uid_t uid,int sig, bool test)
 {
 	RC_PIDLIST *pids;
@@ -400,8 +394,7 @@ do_stop(const char *exec, const char *const *argv,
 	return nkilled;
 }
 
-static int
-run_stop_schedule(const char *exec, const char *const *argv,
+static int run_stop_schedule(const char *exec, const char *const *argv,
     const char *pidfile, uid_t uid,
     bool test, bool progress)
 {
@@ -529,8 +522,7 @@ run_stop_schedule(const char *exec, const char *const *argv,
 	return -nrunning;
 }
 
-static void
-handle_signal(int sig)
+static void handle_signal(int sig)
 {
 	int status;
 	int serrno = errno;
@@ -570,8 +562,7 @@ handle_signal(int sig)
 	errno = serrno;
 }
 
-static char *
-expand_home(const char *home, const char *path)
+static char * expand_home(const char *home, const char *path)
 {
 	char *opath, *ppath, *p, *nh;
 	size_t len;
