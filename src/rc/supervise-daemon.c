@@ -1171,48 +1171,6 @@ int main(int argc, char **argv)
 	}
 	pid = spid;
 
-	/* Wait a little bit and check that process is still running
-	   We do this as some badly written daemons fork and then barf */
-	if (start_wait == 0 &&
-	    ((p = getenv("SSD_STARTWAIT")) ||
-		(p = rc_conf_value("rc_start_wait"))))
-	{
-		if (sscanf(p, "%u", &start_wait) != 1)
-			start_wait = 0;
-	}
-
-	if (start_wait > 0) {
-		struct timespec ts;
-		bool alive = false;
-
-		ts.tv_sec = start_wait / 1000;
-		ts.tv_nsec = (start_wait % 1000) * ONE_MS;
-		if (nanosleep(&ts, NULL) == -1) {
-			if (errno == EINTR)
-				eerror("%s: caught an interrupt", applet);
-			else {
-				eerror("%s: nanosleep: %s",
-				    applet, strerror(errno));
-				return 0;
-			}
-		}
-		if (pidfile) {
-			pid = get_pid(pidfile);
-			if (pid == -1) {
-				eerrorx("%s: did not create a valid"
-				    " pid in `%s'",
-				    applet, pidfile);
-			}
-		} else
-			pid = 0;
-		if (do_stop(exec, (const char *const *)margv,
-			pid, uid, 0, test) > 0)
-			alive = true;
-
-		if (!alive)
-			eerrorx("%s: %s died", applet, exec);
-	}
-
 	if (svcname)
 		rc_service_daemon_set(svcname, exec,
 		    (const char *const *)margv, pidfile, true);
