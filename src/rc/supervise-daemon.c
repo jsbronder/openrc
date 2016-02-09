@@ -647,7 +647,6 @@ int main(int argc, char **argv)
 	char exec_file[PATH_MAX];
 	struct passwd *pw;
 	struct group *gr;
-	char line[130];
 	FILE *fp;
 	size_t len;
 	mode_t numask = 022;
@@ -658,7 +657,6 @@ int main(int argc, char **argv)
 	TAILQ_INIT(&schedule);
 	atexit(cleanup);
 
-	signal_setup(SIGCHLD, handle_signal);
 	signal_setup(SIGINT, handle_signal);
 	signal_setup(SIGQUIT, handle_signal);
 	signal_setup(SIGTERM, handle_signal);
@@ -979,9 +977,20 @@ int main(int argc, char **argv)
 	if (pid == -1)
 		eerrorx("%s: fork: %s", applet, strerror(errno));
 
-	/* Child process - lets go! */
-	if (pid == 0) {
-		pid_t mypid = getpid();
+	/* first parent process, do nothing. */
+	if (pid != 0)
+		exit(EXIT_SUCCESS);
+
+	/* First child process - this is actualy the supervisor. */
+	pid = fork();
+	if (pid == -1)
+		eerrorx("%s: fork: %s", applet, strerror(errno));
+
+	/*
+	 * Write to pidfile and start monitoring the child process.
+	 */
+	if (pid != 0) {
+		signal_setup(SIGCHLD, handle_signal);
 		umask(numask);
 
 #ifdef TIOCNOTTY
@@ -991,14 +1000,14 @@ int main(int argc, char **argv)
 		devnull_fd = open("/dev/null", O_RDWR);
 
 		if (nicelevel) {
-			if (setpriority(PRIO_PROCESS, mypid, nicelevel) == -1)
+			if (setpriority(PRIO_PROCESS, getpid(), nicelevel) == -1)
 				eerrorx("%s: setpritory %d: %s",
 				    applet, nicelevel,
 				    strerror(errno));
 		}
 
 		if (ionicec != -1 &&
-		    ioprio_set(1, mypid, ionicec | ioniced) == -1)
+		    ioprio_set(1, getpid(), ionicec | ioniced) == -1)
 			eerrorx("%s: ioprio_set %d %d: %s", applet,
 			    ionicec, ioniced, strerror(errno));
 
@@ -1014,7 +1023,7 @@ int main(int argc, char **argv)
 		if (! fp)
 			eerrorx("%s: fopen `%s': %s", applet, pidfile,
 			    strerror(errno));
-		fprintf(fp, "%d\n", mypid);
+		fprintf(fp, "%d\n", getpid());
 		fclose(fp);
 
 #ifdef HAVE_PAM
@@ -1142,6 +1151,31 @@ int main(int argc, char **argv)
 		for (i = getdtablesize() - 1; i >= 3; --i)
 			close(i);
 
+		/* 
+		 * Wait for the child process to return.
+		 */
+		i = 0;
+		spid = pid;
+		do {
+			pid = waitpid(spid, &i, 0);
+			if (pid < 1) {
+				eerror("waitpid %d: %s", spid, strerror(errno));
+				return -1;
+			}
+		} while (!WIFEXITED(i) && !WIFSIGNALED(i));
+		if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
+			eerror("%s: failed to start `%s'", applet, exec);
+			exit(EXIT_FAILURE);
+		}
+		pid = spid;
+
+		if (svcname)
+			rc_service_daemon_set(svcname, exec,
+		    (const char *const *)margv, pidfile, true);
+
+		exit(EXIT_SUCCESS);
+	} else if (pid == 0) {
+	/* Child process - lets go! */
 		setsid();
 		execvp(exec, argv);
 #ifdef HAVE_PAM
@@ -1151,30 +1185,4 @@ int main(int argc, char **argv)
 		eerrorx("%s: failed to exec `%s': %s",
 		    applet, exec,strerror(errno));
 	}
-
-	/*
-	 * Parent process
-	 * Wait for the child process to return.
-	 */
-	i = 0;
-	spid = pid;
-	do {
-		pid = waitpid(spid, &i, 0);
-		if (pid < 1) {
-			eerror("waitpid %d: %s", spid, strerror(errno));
-			return -1;
-		}
-	} while (!WIFEXITED(i) && !WIFSIGNALED(i));
-	if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
-		eerror("%s: failed to start `%s'", applet, exec);
-		exit(EXIT_FAILURE);
-	}
-	pid = spid;
-
-	if (svcname)
-		rc_service_daemon_set(svcname, exec,
-		    (const char *const *)margv, pidfile, true);
-
-	exit(EXIT_SUCCESS);
-	/* NOTREACHED */
 }
