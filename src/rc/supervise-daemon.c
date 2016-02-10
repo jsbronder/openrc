@@ -826,6 +826,9 @@ int main(int argc, char **argv)
 	argc -= optind;
 	argv += optind;
 
+	if (! pidfile)
+		eerrorx("%s: A pid file must be given", applet);
+
 	if (!exec) {
 		exec = *argv;
 		if (!exec)
