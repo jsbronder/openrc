@@ -350,6 +350,15 @@ static pid_t get_pid(const char *pidfile)
 	return pid;
 }
 
+static void do_start(const char *exec, char **argv)
+{
+	static char **args = NULL;
+
+	if (argv)
+		args = argv;
+	execvp(exec, args);
+}
+
 /* return number of processed killed, -1 on error */
 static int do_stop(const char *exec, const char *const *argv,
     pid_t pid, uid_t uid,int sig, bool test)
@@ -1180,7 +1189,7 @@ int main(int argc, char **argv)
 	} else if (pid == 0) {
 	/* Child process - lets go! */
 		setsid();
-		execvp(exec, argv);
+		do_start(exec, argv);
 #ifdef HAVE_PAM
 		if (changeuser != NULL && pamr == PAM_SUCCESS)
 			pam_close_session(pamh, PAM_SILENT);
