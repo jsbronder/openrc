@@ -553,6 +553,7 @@ static void handle_signal(int sig)
 		/* NOTREACHED */
 
 	case SIGCHLD:
+		einfo("caught sigchld");
 		for (;;) {
 			if (waitpid(-1, &status, WNOHANG) < 0) {
 				if (errno != ECHILD)
@@ -985,6 +986,14 @@ int main(int argc, char **argv)
 	if (pidfile)
 		unlink(pidfile);
 
+	/*
+	 * Make sure we can write a pid file
+	 */
+	fp = fopen(pidfile, "w");
+	if (! fp)
+		eerrorx("%s: fopen `%s': %s", applet, pidfile, strerror(errno));
+		fclose(fp);
+
 	pid = fork();
 	if (pid == -1)
 		eerrorx("%s: fork: %s", applet, strerror(errno));
@@ -1011,6 +1020,39 @@ int main(int argc, char **argv)
 
 		devnull_fd = open("/dev/null", O_RDWR);
 
+		fp = fopen(pidfile, "w");
+		if (! fp)
+			eerrorx("%s: fopen `%s': %s", applet, pidfile, strerror(errno));
+		fprintf(fp, "%d\n", getpid());
+		fclose(fp);
+
+		/* 
+		 * Wait for the child process to return.
+		 */
+		i = 0;
+		spid = pid;
+		do {
+			pid = waitpid(spid, &i, 0);
+			if (pid < 1) {
+				eerror("waitpid %d: %s", spid, strerror(errno));
+				return -1;
+			}
+		} while (!WIFEXITED(i) && !WIFSIGNALED(i));
+		if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
+			eerror("%s: failed to start `%s'", applet, exec);
+			exit(EXIT_FAILURE);
+		}
+		pid = spid;
+
+		if (svcname)
+			rc_service_daemon_set(svcname, exec,
+		    (const char *const *)margv, pidfile, true);
+
+		exit(EXIT_SUCCESS);
+	} else if (pid == 0) {
+	/* Child process - lets go! */
+		setsid();
+
 		if (nicelevel) {
 			if (setpriority(PRIO_PROCESS, getpid(), nicelevel) == -1)
 				eerrorx("%s: setpritory %d: %s",
@@ -1030,13 +1072,6 @@ int main(int argc, char **argv)
 		if (ch_dir && chdir(ch_dir) < 0)
 			eerrorx("%s: chdir `%s': %s",
 			    applet, ch_dir, strerror(errno));
-
-		fp = fopen(pidfile, "w");
-		if (! fp)
-			eerrorx("%s: fopen `%s': %s", applet, pidfile,
-			    strerror(errno));
-		fprintf(fp, "%d\n", getpid());
-		fclose(fp);
 
 #ifdef HAVE_PAM
 		if (changeuser != NULL) {
@@ -1163,33 +1198,8 @@ int main(int argc, char **argv)
 		for (i = getdtablesize() - 1; i >= 3; --i)
 			close(i);
 
-		/* 
-		 * Wait for the child process to return.
-		 */
-		i = 0;
-		spid = pid;
-		do {
-			pid = waitpid(spid, &i, 0);
-			if (pid < 1) {
-				eerror("waitpid %d: %s", spid, strerror(errno));
-				return -1;
-			}
-		} while (!WIFEXITED(i) && !WIFSIGNALED(i));
-		if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
-			eerror("%s: failed to start `%s'", applet, exec);
-			exit(EXIT_FAILURE);
-		}
-		pid = spid;
-
-		if (svcname)
-			rc_service_daemon_set(svcname, exec,
-		    (const char *const *)margv, pidfile, true);
-
-		exit(EXIT_SUCCESS);
-	} else if (pid == 0) {
-	/* Child process - lets go! */
-		setsid();
 		do_start(exec, argv);
+
 #ifdef HAVE_PAM
 		if (changeuser != NULL && pamr == PAM_SUCCESS)
 			pam_close_session(pamh, PAM_SILENT);
