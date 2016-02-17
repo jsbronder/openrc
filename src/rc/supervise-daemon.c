@@ -130,7 +130,21 @@ typedef struct scheduleitem
 TAILQ_HEAD(, scheduleitem) schedule;
 static char **nav;
 
+static int nicelevel = 0;
+static int ionicec = -1;
+static int ioniced = 0;
 static char *changeuser, *ch_root, *ch_dir;
+static uid_t uid = 0;
+static gid_t gid = 0;
+static int devnull_fd = -1;
+static int stdin_fd;
+static int stdout_fd;
+static int stderr_fd;
+static char *redirect_stderr = NULL;
+static char *redirect_stdout = NULL;
+#ifdef TIOCNOTTY
+static int tty_fd = -1;
+#endif
 
 extern char **environ;
 
@@ -350,18 +364,180 @@ static pid_t get_pid(const char *pidfile)
 	return pid;
 }
 
-static void do_start(const char *exec, char **argv)
+static void child_process(char *exec, char **argv)
 {
-	static char **args = NULL;
+	RC_STRINGLIST *env_list;
+	RC_STRING *env;
+	int i;
+	char *p;
+	char *token;
+	size_t len;
+	char *newpath;
+	char *np;
+	static char *l_exec;
+	static char **l_argv;
 
+#ifdef HAVE_PAM
+	pam_handle_t *pamh = NULL;
+	int pamr;
+	const char *const *pamenv = NULL;
+#endif
+
+	setsid();
+
+	if (nicelevel) {
+		if (setpriority(PRIO_PROCESS, getpid(), nicelevel) == -1)
+			eerrorx("%s: setpriority %d: %s", applet, nicelevel,
+					strerror(errno));
+	}
+
+	if (ionicec != -1 && ioprio_set(1, getpid(), ionicec | ioniced) == -1)
+		eerrorx("%s: ioprio_set %d %d: %s", applet, ionicec, ioniced,
+				strerror(errno));
+
+	if (ch_root && chroot(ch_root) < 0)
+		eerrorx("%s: chroot `%s': %s", applet, ch_root, strerror(errno));
+
+	if (ch_dir && chdir(ch_dir) < 0)
+		eerrorx("%s: chdir `%s': %s", applet, ch_dir, strerror(errno));
+
+#ifdef HAVE_PAM
+	if (changeuser != NULL) {
+		pamr = pam_start("start-stop-daemon",
+		    changeuser, &conv, &pamh);
+
+		if (pamr == PAM_SUCCESS)
+			pamr = pam_acct_mgmt(pamh, PAM_SILENT);
+		if (pamr == PAM_SUCCESS)
+			pamr = pam_open_session(pamh, PAM_SILENT);
+		if (pamr != PAM_SUCCESS)
+			eerrorx("%s: pam error: %s", applet, pam_strerror(pamh, pamr));
+	}
+#endif
+
+	if (gid && setgid(gid))
+		eerrorx("%s: unable to set groupid to %d", applet, gid);
+	if (changeuser && initgroups(changeuser, gid))
+		eerrorx("%s: initgroups (%s, %d)", applet, changeuser, gid);
+	if (uid && setuid(uid))
+		eerrorx ("%s: unable to set userid to %d", applet, uid);
+
+	/* Close any fd's to the passwd database */
+	endpwent();
+
+#ifdef TIOCNOTTY
+	ioctl(tty_fd, TIOCNOTTY, 0);
+	close(tty_fd);
+#endif
+
+	/* Clean the environment of any RC_ variables */
+	env_list = rc_stringlist_new();
+	i = 0;
+	while (environ[i])
+		rc_stringlist_add(env_list, environ[i++]);
+
+#ifdef HAVE_PAM
+	if (changeuser != NULL) {
+		pamenv = (const char *const *)pam_getenvlist(pamh);
+		if (pamenv) {
+			while (*pamenv) {
+				/* Don't add strings unless they set a var */
+				if (strchr(*pamenv, '='))
+					putenv(xstrdup(*pamenv));
+				else
+					unsetenv(*pamenv);
+				pamenv++;
+			}
+		}
+	}
+#endif
+
+	TAILQ_FOREACH(env, env_list, entries) {
+		if ((strncmp(env->value, "RC_", 3) == 0 &&
+			strncmp(env->value, "RC_SERVICE=", 10) != 0 &&
+			strncmp(env->value, "RC_SVCNAME=", 10) != 0) ||
+		    strncmp(env->value, "SSD_NICELEVEL=", 14) == 0)
+		{
+			p = strchr(env->value, '=');
+			*p = '\0';
+			unsetenv(env->value);
+			continue;
+		}
+	}
+	rc_stringlist_free(env_list);
+
+	/* For the path, remove the rcscript bin dir from it */
+	if ((token = getenv("PATH"))) {
+		len = strlen(token);
+		newpath = np = xmalloc(len + 1);
+		while (token && *token) {
+			p = strchr(token, ':');
+			if (p) {
+				*p++ = '\0';
+				while (*p == ':')
+					p++;
+			}
+			if (strcmp(token, RC_LIBEXECDIR "/bin") != 0 &&
+			    strcmp(token, RC_LIBEXECDIR "/sbin") != 0)
+			{
+				len = strlen(token);
+				if (np != newpath)
+					*np++ = ':';
+				memcpy(np, token, len);
+				np += len;
+				}
+			token = p;
+		}
+		*np = '\0';
+		unsetenv("PATH");
+		setenv("PATH", newpath, 1);
+	}
+
+	stdin_fd = devnull_fd;
+	stdout_fd = devnull_fd;
+	stderr_fd = devnull_fd;
+	if (redirect_stdout) {
+		if ((stdout_fd = open(redirect_stdout,
+			    O_WRONLY | O_CREAT | O_APPEND,
+			    S_IRUSR | S_IWUSR)) == -1)
+			eerrorx("%s: unable to open the logfile"
+				    " for stdout `%s': %s",
+				    applet, redirect_stdout, strerror(errno));
+	}
+	if (redirect_stderr) {
+		if ((stderr_fd = open(redirect_stderr,
+			    O_WRONLY | O_CREAT | O_APPEND,
+			    S_IRUSR | S_IWUSR)) == -1)
+			eerrorx("%s: unable to open the logfile"
+			    " for stderr `%s': %s",
+			    applet, redirect_stderr, strerror(errno));
+	}
+
+	dup2(stdin_fd, STDIN_FILENO);
+	if (redirect_stdout || rc_yesno(getenv("EINFO_QUIET")))
+		dup2(stdout_fd, STDOUT_FILENO);
+	if (redirect_stderr || rc_yesno(getenv("EINFO_QUIET")))
+		dup2(stderr_fd, STDERR_FILENO);
+
+	for (i = getdtablesize() - 1; i >= 3; --i)
+		close(i);
+
+	if (exec)
+		l_exec = exec;
 	if (argv)
-		args = argv;
-	execvp(exec, args);
+		l_argv = argv;
+	execvp(l_exec, l_argv);
+
+#ifdef HAVE_PAM
+	if (changeuser != NULL && pamr == PAM_SUCCESS)
+		pam_close_session(pamh, PAM_SILENT);
+#endif
+	eerrorx("%s: failed to exec `%s': %s", applet, exec,strerror(errno));
 }
 
 /* return number of processed killed, -1 on error */
 static int do_stop(const char *exec, const char *const *argv,
-    pid_t pid, uid_t uid,int sig, bool test)
+    pid_t pid, int sig, bool test)
 {
 	RC_PIDLIST *pids;
 	RC_PID *pi;
@@ -404,8 +580,7 @@ static int do_stop(const char *exec, const char *const *argv,
 }
 
 static int run_stop_schedule(const char *exec, const char *const *argv,
-    const char *pidfile, uid_t uid,
-    bool test, bool progress)
+    const char *pidfile, bool test, bool progress)
 {
 	SCHEDULEITEM *item = TAILQ_FIRST(&schedule);
 	int nkilled = 0;
@@ -449,7 +624,7 @@ static int run_stop_schedule(const char *exec, const char *const *argv,
 
 		case SC_SIGNAL:
 			nrunning = 0;
-			nkilled = do_stop(exec, argv, pid, uid, item->value, test);
+			nkilled = do_stop(exec, argv, pid, item->value, test);
 			if (nkilled == 0) {
 				if (tkilled == 0) {
 					if (progressed)
@@ -478,7 +653,7 @@ static int run_stop_schedule(const char *exec, const char *const *argv,
 				     nloops++)
 				{
 					if ((nrunning = do_stop(exec, argv,
-						    pid, uid, 0, test)) == 0)
+						    pid, 0, test)) == 0)
 						return 0;
 
 
@@ -553,7 +728,6 @@ static void handle_signal(int sig)
 		/* NOTREACHED */
 
 	case SIGCHLD:
-		einfo("caught sigchld");
 		for (;;) {
 			if (waitpid(-1, &status, WNOHANG) < 0) {
 				if (errno != ECHILD)
@@ -562,6 +736,7 @@ static void handle_signal(int sig)
 				break;
 			}
 		}
+		child_process(NULL, NULL);
 		break;
 
 	default:
@@ -615,17 +790,6 @@ static char * expand_home(const char *home, const char *path)
 
 int main(int argc, char **argv)
 {
-	int devnull_fd = -1;
-#ifdef TIOCNOTTY
-	int tty_fd = -1;
-#endif
-
-#ifdef HAVE_PAM
-	pam_handle_t *pamh = NULL;
-	int pamr;
-	const char *const *pamenv = NULL;
-#endif
-
 	int opt;
 	bool start = false;
 	bool stop = false;
@@ -635,30 +799,19 @@ int main(int argc, char **argv)
 	char *pidfile = NULL;
 	char *retry = NULL;
 	int sig = -1;
-	int nicelevel = 0, ionicec = -1, ioniced = 0;
 	bool progress = false;
-	uid_t uid = 0;
-	gid_t gid = 0;
 	char *home = NULL;
 	int tid = 0;
-	char *redirect_stderr = NULL;
-	char *redirect_stdout = NULL;
-	int stdin_fd;
-	int stdout_fd;
-	int stderr_fd;
 	pid_t pid, spid;
-	int i;
 	char *svcname = getenv("RC_SVCNAME");
-	RC_STRINGLIST *env_list;
-	RC_STRING *env;
-	char *tmp, *newpath, *np;
+	char *tmp;
 	char *p;
 	char *token;
+	int i;
 	char exec_file[PATH_MAX];
 	struct passwd *pw;
 	struct group *gr;
 	FILE *fp;
-	size_t len;
 	mode_t numask = 022;
 	char **margv;
 	unsigned int start_wait = 0;
@@ -924,7 +1077,7 @@ int main(int argc, char **argv)
 		else
 			parse_schedule(NULL, sig);
 		i = run_stop_schedule(exec, (const char *const *)margv,
-		    pidfile, uid, test, progress);
+		    pidfile, test, progress);
 
 		if (i < 0)
 			/* We failed to stop something */
@@ -950,8 +1103,7 @@ int main(int argc, char **argv)
 	else
 		pid = 0;
 
-	if (do_stop(exec, (const char * const *)margv, pid, uid,
-		0, test) > 0)
+	if (do_stop(exec, (const char * const *)margv, pid, 0, test) > 0)
 		eerrorx("%s: %s is already running", applet, exec);
 
 	if (test) {
@@ -1002,15 +1154,12 @@ int main(int argc, char **argv)
 	if (pid != 0)
 		exit(EXIT_SUCCESS);
 
-	/* First child process - this is actualy the supervisor. */
 	pid = fork();
 	if (pid == -1)
 		eerrorx("%s: fork: %s", applet, strerror(errno));
 
-	/*
-	 * Write to pidfile and start monitoring the child process.
-	 */
 	if (pid != 0) {
+		/* this is the supervisor */
 		signal_setup(SIGCHLD, handle_signal);
 		umask(numask);
 
@@ -1049,162 +1198,6 @@ int main(int argc, char **argv)
 		    (const char *const *)margv, pidfile, true);
 
 		exit(EXIT_SUCCESS);
-	} else if (pid == 0) {
-	/* Child process - lets go! */
-		setsid();
-
-		if (nicelevel) {
-			if (setpriority(PRIO_PROCESS, getpid(), nicelevel) == -1)
-				eerrorx("%s: setpritory %d: %s",
-				    applet, nicelevel,
-				    strerror(errno));
-		}
-
-		if (ionicec != -1 &&
-		    ioprio_set(1, getpid(), ionicec | ioniced) == -1)
-			eerrorx("%s: ioprio_set %d %d: %s", applet,
-			    ionicec, ioniced, strerror(errno));
-
-		if (ch_root && chroot(ch_root) < 0)
-			eerrorx("%s: chroot `%s': %s",
-			    applet, ch_root, strerror(errno));
-
-		if (ch_dir && chdir(ch_dir) < 0)
-			eerrorx("%s: chdir `%s': %s",
-			    applet, ch_dir, strerror(errno));
-
-#ifdef HAVE_PAM
-		if (changeuser != NULL) {
-			pamr = pam_start("start-stop-daemon",
-			    changeuser, &conv, &pamh);
-
-			if (pamr == PAM_SUCCESS)
-				pamr = pam_acct_mgmt(pamh, PAM_SILENT);
-			if (pamr == PAM_SUCCESS)
-				pamr = pam_open_session(pamh, PAM_SILENT);
-			if (pamr != PAM_SUCCESS)
-				eerrorx("%s: pam error: %s",
-					applet, pam_strerror(pamh, pamr));
-		}
-#endif
-
-		if (gid && setgid(gid))
-			eerrorx("%s: unable to set groupid to %d",
-			    applet, gid);
-		if (changeuser && initgroups(changeuser, gid))
-			eerrorx("%s: initgroups (%s, %d)",
-			    applet, changeuser, gid);
-		if (uid && setuid(uid))
-			eerrorx ("%s: unable to set userid to %d",
-			    applet, uid);
-
-		/* Close any fd's to the passwd database */
-		endpwent();
-
-#ifdef TIOCNOTTY
-		ioctl(tty_fd, TIOCNOTTY, 0);
-		close(tty_fd);
-#endif
-
-		/* Clean the environment of any RC_ variables */
-		env_list = rc_stringlist_new();
-		i = 0;
-		while (environ[i])
-			rc_stringlist_add(env_list, environ[i++]);
-
-#ifdef HAVE_PAM
-		if (changeuser != NULL) {
-			pamenv = (const char *const *)pam_getenvlist(pamh);
-			if (pamenv) {
-				while (*pamenv) {
-					/* Don't add strings unless they set a var */
-					if (strchr(*pamenv, '='))
-						putenv(xstrdup(*pamenv));
-					else
-						unsetenv(*pamenv);
-					pamenv++;
-				}
-			}
-		}
-#endif
-
-		TAILQ_FOREACH(env, env_list, entries) {
-			if ((strncmp(env->value, "RC_", 3) == 0 &&
-				strncmp(env->value, "RC_SERVICE=", 10) != 0 &&
-				strncmp(env->value, "RC_SVCNAME=", 10) != 0) ||
-			    strncmp(env->value, "SSD_NICELEVEL=", 14) == 0)
-			{
-				p = strchr(env->value, '=');
-				*p = '\0';
-				unsetenv(env->value);
-				continue;
-			}
-		}
-		rc_stringlist_free(env_list);
-
-		/* For the path, remove the rcscript bin dir from it */
-		if ((token = getenv("PATH"))) {
-			len = strlen(token);
-			newpath = np = xmalloc(len + 1);
-			while (token && *token) {
-				p = strchr(token, ':');
-				if (p) {
-					*p++ = '\0';
-					while (*p == ':')
-						p++;
-				}
-				if (strcmp(token, RC_LIBEXECDIR "/bin") != 0 &&
-				    strcmp(token, RC_LIBEXECDIR "/sbin") != 0)
-				{
-					len = strlen(token);
-					if (np != newpath)
-						*np++ = ':';
-					memcpy(np, token, len);
-					np += len;
-				}
-				token = p;
-			}
-			*np = '\0';
-			unsetenv("PATH");
-			setenv("PATH", newpath, 1);
-		}
-
-		stdin_fd = devnull_fd;
-		stdout_fd = devnull_fd;
-		stderr_fd = devnull_fd;
-		if (redirect_stdout) {
-			if ((stdout_fd = open(redirect_stdout,
-				    O_WRONLY | O_CREAT | O_APPEND,
-				    S_IRUSR | S_IWUSR)) == -1)
-				eerrorx("%s: unable to open the logfile"
-				    " for stdout `%s': %s",
-				    applet, redirect_stdout, strerror(errno));
-		}
-		if (redirect_stderr) {
-			if ((stderr_fd = open(redirect_stderr,
-				    O_WRONLY | O_CREAT | O_APPEND,
-				    S_IRUSR | S_IWUSR)) == -1)
-				eerrorx("%s: unable to open the logfile"
-				    " for stderr `%s': %s",
-				    applet, redirect_stderr, strerror(errno));
-		}
-
-		dup2(stdin_fd, STDIN_FILENO);
-		if (redirect_stdout || rc_yesno(getenv("EINFO_QUIET")))
-			dup2(stdout_fd, STDOUT_FILENO);
-		if (redirect_stderr || rc_yesno(getenv("EINFO_QUIET")))
-			dup2(stderr_fd, STDERR_FILENO);
-
-		for (i = getdtablesize() - 1; i >= 3; --i)
-			close(i);
-
-		do_start(exec, argv);
-
-#ifdef HAVE_PAM
-		if (changeuser != NULL && pamr == PAM_SUCCESS)
-			pam_close_session(pamh, PAM_SILENT);
-#endif
-		eerrorx("%s: failed to exec `%s': %s",
-		    applet, exec,strerror(errno));
-	}
+	} else if (pid == 0)
+		child_process(exec, argv);
 }
