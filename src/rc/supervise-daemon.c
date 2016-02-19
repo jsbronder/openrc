@@ -375,8 +375,6 @@ static void child_process(char *exec, char **argv)
 	size_t len;
 	char *newpath;
 	char *np;
-	static char *l_exec;
-	static char **l_argv;
 
 #ifdef HAVE_PAM
 	pam_handle_t *pamh = NULL;
@@ -523,11 +521,7 @@ static void child_process(char *exec, char **argv)
 	for (i = getdtablesize() - 1; i >= 3; --i)
 		close(i);
 
-	if (exec)
-		l_exec = exec;
-	if (argv)
-		l_argv = argv;
-	execvp(l_exec, l_argv);
+	execvp(exec, argv);
 
 #ifdef HAVE_PAM
 	if (changeuser != NULL && pamr == PAM_SUCCESS)
