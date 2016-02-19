@@ -142,6 +142,7 @@ static int stdout_fd;
 static int stderr_fd;
 static char *redirect_stderr = NULL;
 static char *redirect_stdout = NULL;
+static bool exiting = false;
 #ifdef TIOCNOTTY
 static int tty_fd = -1;
 #endif
@@ -708,7 +709,6 @@ static int run_stop_schedule(const char *exec, const char *const *argv,
 
 static void handle_signal(int sig)
 {
-	int status;
 	int serrno = errno;
 	char signame[10] = { '\0' };
 
@@ -724,20 +724,8 @@ static void handle_signal(int sig)
 	case SIGQUIT:
 		if (!signame[0])
 			snprintf(signame, sizeof(signame), "SIGQUIT");
-		eerrorx("%s: caught %s, aborting", applet, signame);
-		/* NOTREACHED */
-
-	case SIGCHLD:
-		for (;;) {
-			if (waitpid(-1, &status, WNOHANG) < 0) {
-				if (errno != ECHILD)
-					eerror("%s: waitpid: %s",
-					    applet, strerror(errno));
-				break;
-			}
-		}
-		child_process(NULL, NULL);
-		break;
+		eerror("%s: caught %s, aborting", applet, signame);
+		exiting = true;
 
 	default:
 		eerror("%s: caught unknown signal %d", applet, sig);
@@ -802,7 +790,7 @@ int main(int argc, char **argv)
 	bool progress = false;
 	char *home = NULL;
 	int tid = 0;
-	pid_t pid, spid;
+	pid_t pid;
 	char *svcname = getenv("RC_SVCNAME");
 	char *tmp;
 	char *p;
@@ -1131,7 +1119,7 @@ int main(int argc, char **argv)
 		exit(EXIT_SUCCESS);
 	}
 
-	ebeginv("Detaching to start `%s'", exec);
+	einfov("Detaching to start `%s'", exec);
 	eindentv();
 
 	/* Remove existing pidfile */
@@ -1160,7 +1148,6 @@ int main(int argc, char **argv)
 
 	if (pid != 0) {
 		/* this is the supervisor */
-		signal_setup(SIGCHLD, handle_signal);
 		umask(numask);
 
 #ifdef TIOCNOTTY
@@ -1176,26 +1163,23 @@ int main(int argc, char **argv)
 		fclose(fp);
 
 		/* 
-		 * Wait for the child process to return.
+		 * Supervisor main loop
 		 */
 		i = 0;
-		spid = pid;
-		do {
-			pid = waitpid(spid, &i, 0);
-			if (pid < 1) {
-				eerror("waitpid %d: %s", spid, strerror(errno));
-				return -1;
+		while (!exiting) {
+			wait(&i);
+			if (!exiting) {
+				pid = fork();
+				if (pid == -1)
+					eerrorx("%s: fork: %s", applet, strerror(errno));
+				if (pid == 0)
+					child_process(exec, argv);
 			}
-		} while (!WIFEXITED(i) && !WIFSIGNALED(i));
-		if (!WIFEXITED(i) || WEXITSTATUS(i) != 0) {
-			eerror("%s: failed to start `%s'", applet, exec);
-			exit(EXIT_FAILURE);
 		}
-		pid = spid;
 
 		if (svcname)
-			rc_service_daemon_set(svcname, exec,
-		    (const char *const *)margv, pidfile, true);
+			rc_service_daemon_set(svcname, exec, (const char *const *)margv,
+					pidfile, true);
 
 		exit(EXIT_SUCCESS);
 	} else if (pid == 0)
