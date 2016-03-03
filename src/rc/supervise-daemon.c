@@ -130,6 +130,7 @@ typedef struct scheduleitem
 TAILQ_HEAD(, scheduleitem) schedule;
 static char **nav;
 
+static pid_t child_pid = 0;
 static int nicelevel = 0;
 static int ionicec = -1;
 static int ioniced = 0;
@@ -142,7 +143,6 @@ static int stdout_fd;
 static int stderr_fd;
 static char *redirect_stderr = NULL;
 static char *redirect_stdout = NULL;
-static bool exiting = false;
 #ifdef TIOCNOTTY
 static int tty_fd = -1;
 #endif
@@ -719,12 +719,11 @@ static void handle_signal(int sig)
 		if (!signame[0])
 			snprintf(signame, sizeof(signame), "SIGQUIT");
 		eerror("%s: caught %s, aborting", applet, signame);
-		exiting = true;
-
 	default:
 		eerror("%s: caught unknown signal %d", applet, sig);
 	}
 
+	eerror("%s: caught unknown signal %d", applet, sig);
 	/* Restore errno */
 	errno = serrno;
 }
@@ -1160,8 +1159,13 @@ int main(int argc, char **argv)
 		 * Supervisor main loop
 		 */
 		i = 0;
+		child_pid = pid;
 		while (!exiting) {
 			wait(&i);
+			/*
+			 * check the value of I to see if we can use it to exit this
+			 * loop
+			 */
 			if (!exiting) {
 				pid = fork();
 				if (pid == -1)
